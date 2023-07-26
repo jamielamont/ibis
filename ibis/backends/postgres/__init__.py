@@ -60,6 +60,7 @@ class Backend(BaseAlchemyBackend):
         schema: str | None = None,
         url: str | None = None,
         driver: Literal["psycopg2"] = "psycopg2",
+        kdb: bool = False,
     ) -> None:
         """Create an Ibis client connected to PostgreSQL database.
 
@@ -142,35 +143,38 @@ class Backend(BaseAlchemyBackend):
             connect_args["options"] = f"-csearch_path={schema}"
 
         engine = sa.create_engine(
-            alchemy_url, connect_args=connect_args, poolclass=sa.pool.StaticPool
+            alchemy_url, connect_args=connect_args, poolclass=sa.pool.StaticPool, use_native_hstore=not kdb
         )
+
+        engine.kdb=kdb
 
         @sa.event.listens_for(engine, "connect")
         def connect(dbapi_connection, connection_record):
             with dbapi_connection.cursor() as cur:
                 cur.execute("SET TIMEZONE = UTC")
 
-        @sa.event.listens_for(engine, "before_execute")
-        def receive_before_execute(
-            conn, clauseelement, multiparams, params, execution_options
-        ):
-            with conn.connection.cursor() as cur:
-                try:
-                    cur.execute(_CREATE_FIRST_LAST_AGGS_SQL)
-                except Exception as e:  # noqa: BLE001
-                    # a user may not have permissions to create funtions and/or aggregates
-                    warnings.warn(f"Unable to create first/last aggregates: {e}")
+        if not kdb:
+            @sa.event.listens_for(engine, "before_execute")
+            def receive_before_execute(
+                conn, clauseelement, multiparams, params, execution_options
+            ):
+                with conn.connection.cursor() as cur:
+                    try:
+                        cur.execute(_CREATE_FIRST_LAST_AGGS_SQL)
+                    except Exception as e:  # noqa: BLE001
+                        # a user may not have permissions to create funtions and/or aggregates
+                        warnings.warn(f"Unable to create first/last aggregates: {e}")
 
-        @sa.event.listens_for(engine, "after_execute")
-        def receive_after_execute(
-            conn, clauseelement, multiparams, params, execution_options, result
-        ):
-            with conn.connection.cursor() as cur:
-                try:
-                    cur.execute(_DROP_FIRST_LAST_AGGS_SQL)
-                except Exception as e:  # noqa: BLE001
-                    # a user may not have permissions to drop funtions and/or aggregates
-                    warnings.warn(f"Unable to drop first/last aggregates: {e}")
+            @sa.event.listens_for(engine, "after_execute")
+            def receive_after_execute(
+                conn, clauseelement, multiparams, params, execution_options, result
+            ):
+                with conn.connection.cursor() as cur:
+                    try:
+                        cur.execute(_DROP_FIRST_LAST_AGGS_SQL)
+                    except Exception as e:  # noqa: BLE001
+                        # a user may not have permissions to drop funtions and/or aggregates
+                        warnings.warn(f"Unable to drop first/last aggregates: {e}")
 
         super().do_connect(engine)
 

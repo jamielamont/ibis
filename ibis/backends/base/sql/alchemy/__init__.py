@@ -100,8 +100,15 @@ class BaseAlchemyBackend(BaseSQLBackend):
 
     def list_tables(self, like=None, database=None):
         tables = self.inspector.get_table_names(schema=database)
-        views = self.inspector.get_view_names(schema=database)
-        return self._filter_with_like(tables + views, like)
+        if hasattr(self.con.engine, 'kdb'):
+            if not self.con.engine.kdb:
+                views = self.inspector.get_view_names(schema=database)
+                return self._filter_with_like(tables + views, like)
+            else:
+                return self._filter_with_like(tables, like)
+        else:
+            views = self.inspector.get_view_names(schema=database)
+            return self._filter_with_like(tables + views, like)
 
     def list_databases(self, like=None):
         """List databases in the current server."""
@@ -482,6 +489,8 @@ class BaseAlchemyBackend(BaseSQLBackend):
             sa.text(query) if isinstance(query, str) else query
         )
 
+    satypes={'integer':sa.Integer, 'timestamp without time zone':sa.DateTime, 'date':sa.Date, 'double precision':sa.Double, 'character varying':sa.String, 'character':sa.String, 'boolean':sa.Boolean, 'bigint':sa.BigInteger}
+
     def table(
         self,
         name: str,
@@ -509,15 +518,25 @@ class BaseAlchemyBackend(BaseSQLBackend):
         Table
             Table expression
         """
-        if database is not None:
-            if not isinstance(database, str):
-                raise com.IbisTypeError(
-                    f"`database` must be a string; got {type(database)}"
-                )
-            if database != self.current_database:
-                return self.database(name=database).table(name=name, schema=schema)
-        sqla_table = self._get_sqla_table(name, database=database, schema=schema)
-        return self._sqla_table_to_expr(sqla_table)
+        if hasattr(self.con.engine, 'kdb') & self.con.engine.kdb:
+            metadata_obj = sa.MetaData()
+            sqla_table=sa.Table(name,metadata_obj)
+            res=self.con.connect().exec_driver_sql("SELECT column_name, data_type FROM information_schema.columns WHERE table_name= '"+name+"'")
+            res=res.fetchall()
+            res=dict(res)
+            for k,v in res.items():
+                sqla_table.append_column(sa.Column(k,self.satypes[v]))
+            return self._sqla_table_to_expr(sqla_table)
+        else:
+            if database is not None:
+                if not isinstance(database, str):
+                    raise com.IbisTypeError(
+                        f"`database` must be a string; got {type(database)}"
+                    )
+                if database != self.current_database:
+                    return self.database(name=database).table(name=name, schema=schema)
+            sqla_table = self._get_sqla_table(name, database=database, schema=schema)
+            return self._sqla_table_to_expr(sqla_table)
 
     def _insert_dataframe(
         self, table_name: str, df: pd.DataFrame, overwrite: bool
